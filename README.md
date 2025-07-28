@@ -26,9 +26,6 @@
 
 
 **Our Team:**
-* Team-Idea.md has information on what Team wants to "Hack".  
-* conversation.md has "Hacked" conversation examples.  
-  * Please add any ideas to this file.  
 * I turned on Discussions for us to use as a option.  
 * Create a Blog about teams journey  
 * Presentation?  
