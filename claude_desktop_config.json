@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "vcrocs": {
+      "command": "python3",
+      "args": [
+        "/Users/dalehassinger/mcp-demo/vcrocs_mcp.py"
+      ],
+      "env": {
+        "TRANSPORT": "stdio",
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}
