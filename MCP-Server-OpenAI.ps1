@@ -1,6 +1,58 @@
 #!/usr/bin/env pwsh
 # mcp-server.ps1 - PowerShell MCP server over stdio
+# pwsh -NoLogo -NonInteractive -File /Users/dalehassinger/Documents/GitHub/PS-TAM-Lab/MCP/MCP-Server-OpenAI.ps1
 # Run: pwsh -NoLogo -NonInteractive -File ./mcp-server.ps1
+#
+# ==== STDIO USAGE (Manual / Debug) ==========================================
+# 1) Start the server (it reads JSON lines from stdin, writes JSON lines to stdout):
+#      pwsh -NoLogo -NonInteractive -File /Users/dalehassinger/Documents/GitHub/PS-TAM-Lab/MCP/MCP-Server-OpenAI.ps1
+#
+# 2) In another shell, you can pipe JSON into the process. Example with a heredoc:
+#      pwsh -NoLogo -NonInteractive -File /Users/dalehassinger/Documents/GitHub/PS-TAM-Lab/MCP/MCP-Server-OpenAI.ps1 <<'EOF'
+#      {"method":"initialize","id":1,"jsonrpc":"2.0"}
+#      {"method":"tools/list","id":2,"jsonrpc":"2.0"}
+#      EOF
+#
+#    (Above exits after EOF; for interactive testing open a terminal multiplexer
+#     or use a small wrapper script that keeps stdin open.)
+#
+# 3) Example tool call (replace VMName etc. as needed):
+#      {"method":"tools/call","id":3,"jsonrpc":"2.0","params":{"name":"Get-vCenter-Host-Health","arguments":{}}}
+#      {"method":"tools/call","id":4,"jsonrpc":"2.0","params":{"name":"Send-Email","arguments":{"ToEmail":"dale.hassinger@outlook.com","Subject":"Test","Body":"Hi"}}}
+#
+# 4) Using echo (single command):
+#      echo '{"method":"initialize","id":10,"jsonrpc":"2.0"}' | pwsh -NoLogo -NonInteractive -File /Users/dalehassinger/Documents/GitHub/PS-TAM-Lab/MCP/MCP-Server-OpenAI.ps1
+#
+# 5) Programmatic client outline (pseudo):
+#      - spawn process: pwsh -NoLogo -NonInteractive -File MCP-Server-OpenAI.ps1
+#      - write one JSON object per line to stdin
+#      - read one JSON line per response from stdout
+#
+# 6) The server does NOT open a TCP port; all communication is line-delimited JSON over stdio.
+# 
+# cli Prompts tested by Hackathon Team
+<#
+
+pwsh -NoLogo -NonInteractive -File /Users/dalehassinger/Documents/GitHub/PS-TAM-Lab/MCP/MCP-Server-OpenAI.ps1 <<'EOF'
+{"method":"tools/call","id":3,"jsonrpc":"2.0","params":{"name":"Get-vCenter-Host-Health","arguments":{}}}
+EOF
+
+
+pwsh -NoLogo -NonInteractive -File /Users/dalehassinger/Documents/GitHub/PS-TAM-Lab/MCP/MCP-Server-OpenAI.ps1 <<'EOF'
+{"method":"tools/call","id":4,"jsonrpc":"2.0","params":{"name":"Send-Email","arguments":{"ToEmail":"dale.hassinger@outlook.com","Subject":"Test","Body":"Hi"}}}
+EOF
+
+pwsh -NoLogo -NonInteractive -File /Users/dalehassinger/Documents/GitHub/PS-TAM-Lab/MCP/MCP-Server-OpenAI.ps1 <<'EOF'
+{"method":"tools/call","id":3,"jsonrpc":"2.0","params":{"name":"Get-Network-Switch-Stats","arguments":{}}} 
+EOF
+
+echo '{"method":"tools/call","id":3,"jsonrpc":"2.0","params":{"name":"Get-Network-Switch-Stats","arguments":{}}}' | pwsh -NoLogo -NonInteractive -File /Users/dalehassinger/Documents/GitHub/PS-TAM-Lab/MCP/MCP-Server-OpenAI.ps1
+
+echo '{"method":"tools/call","id":4,"jsonrpc":"2.0","params":{"name":"Send-Email","arguments":{"ToEmail":"dale.hassinger@outlook.com","Subject":"MCP Email","Body":"Hi, welcome to the Hackathon!"}}}' | pwsh -NoLogo -NonInteractive -File /Users/dalehassinger/Documents/GitHub/PS-TAM-Lab/MCP/MCP-Server-OpenAI.ps1
+
+#>
+#
+# ============================================================================
 
 using namespace System.Text
 using namespace System.IO
@@ -138,12 +190,149 @@ function Send-Email {
 } # End function
 
 
+
+function Get-vCenter-Host-Tiered-Memory-Usage {
+    <#
+    .SYNOPSIS
+      Collect tiered memory usage for all VMs across ESXi hosts and return JSON.
+    .DESCRIPTION
+      Connects to vCenter, enumerates ESXi hosts, then SSHes to each host to fetch:
+        - VM process list (to map VMX Cartel IDs to VM display names)
+        - memstats vmtier-stats (tiered memory usage per VM in MB)
+      Produces a JSON array of objects with Host, Name, MemSizeMB, ActiveMB, Tier0-RAM, Tier1-NVMe.
+      vCLS system VMs are excluded.
+    .REQUIREMENTS
+      - VMware PowerCLI
+      - sshpass available in PATH on the machine running this function
+    .OUTPUTS
+      System.String (JSON)
+    .EXAMPLE
+      Get-vCenter-Host-Tiered-Memory-Usage
+    #>
+    [CmdletBinding()]
+    param()
+
+    # Resolve vCenter connection info (prefer YAML config if present)
+    $vcServer   = if ($cfg.vCenter.server)   { $cfg.vCenter.server }   else { "vcsa8x.vcrocs.local" }
+    $vcUsername = if ($cfg.vCenter.username) { $cfg.vCenter.username } else { "administrator@vcrocs.local" }
+    $vcPassword = if ($cfg.vCenter.password) { $cfg.vCenter.password } else { "VMware1!" }
+
+    try {
+        # Connect to vCenter
+        Connect-VIServer -Server $vcServer -User $vcUsername -Password $vcPassword -Protocol https -Force -ErrorAction Stop | Out-Null
+
+        # Validate sshpass availability (required for ESXi SSH)
+        if (-not (Get-Command sshpass -ErrorAction SilentlyContinue)) {
+            throw "sshpass is not installed or not in PATH. Install sshpass and try again."
+        }
+
+        # Enumerate ESXi hosts
+        $esxiHosts = Get-VMHost -ErrorAction Stop
+
+        # Aggregate results for all hosts
+        $combinedResults = @()
+
+        foreach ($esxiHost in $esxiHosts) {
+            $server   = $esxiHost.Name
+            $username = "root"        # TODO: Prefer secure storage or YAML config
+            $password = "VMware1!"    # TODO: Prefer secure storage or YAML config
+
+            Write-Verbose "Querying host $server for VM list and tiered memory stats"
+
+            # 1) Build VMX CartelID -> DisplayName map from esxcli (CSV)
+            $vmCommand = "esxcli --formatter csv vm process list"
+            $args_vm = @(
+                "-p", $password, "ssh",
+                "-o","ConnectTimeout=10",
+                "-o","PreferredAuthentications=password",
+                "-o","PubkeyAuthentication=no",
+                "-o","StrictHostKeyChecking=no",
+                "-o","LogLevel=QUIET",
+                "$username@$server",
+                $vmCommand
+            )
+            $vmCsv = & sshpass @args_vm 2>$null
+            $vmNameMap = @{}
+            if ($vmCsv) {
+                try {
+                    $vmRows = $vmCsv | ConvertFrom-Csv
+                    foreach ($row in $vmRows) {
+                        # Try common id/display column names with fallbacks
+                        $id = $row.VMXCartelID; if (-not $id) { $id = $row.CartelID }
+                        if (-not $id) { $id = $row.WorldID }
+                        $name = $row.DisplayName; if (-not $name) { $name = $row.Name }
+                        if ($id -and $name) { $vmNameMap[$id] = $name }
+                    }
+                } catch {
+                    Write-Verbose "Failed to parse VM CSV for $($server): $($_.Exception.Message)"
+                }
+            }
+
+            # 2) Query tiered memory stats
+            $memCommand = 'memstats -r vmtier-stats -u mb -s name:memSize:active:tier0Consumed:tier1Consumed'
+            $args_mem = @(
+                "-p", $password, "ssh",
+                "-o","ConnectTimeout=10",
+                "-o","PreferredAuthentications=password",
+                "-o","PubkeyAuthentication=no",
+                "-o","StrictHostKeyChecking=no",
+                "-o","LogLevel=QUIET",
+                "$username@$server",
+                $memCommand
+            )
+            $memOutput = & sshpass @args_mem 2>$null
+            if (-not $memOutput) { continue }
+
+            # Normalize and filter lines
+            $lines = $memOutput -split "`n" |
+                     ForEach-Object { $_.Trim() } |
+                     Where-Object { $_ -and $_ -notmatch '^-{2,}|Total|Start|No\.|VIRTUAL|Unit|Selected' }
+
+            # Regex shape: "vm.<cartelId>  <memSize>  <active>  <tier0>  <tier1>"
+            $pattern = '^(?<name>\S+)\s+(?<memSize>\d+)\s+(?<active>\d+)\s+(?<tier0Consumed>\d+)\s+(?<tier1Consumed>\d+)$'
+
+            foreach ($line in $lines) {
+                if ($line -match $pattern) {
+                    $nameKey = ($matches['name'] -replace '^vm\.', '')
+                    $display = if ($vmNameMap.ContainsKey($nameKey)) { $vmNameMap[$nameKey] } else { $nameKey }
+
+                    # Exclude system VMs
+                    if ($display -like 'vCLS-*') { continue }
+
+                    $combinedResults += [pscustomobject]@{
+                        Host         = $server
+                        Name         = $display
+                        MemSizeMB    = [int]$matches['memSize']
+                        ActiveMB     = [int]$matches['active']
+                        'Tier0-RAM'  = [int]$matches['tier0Consumed']
+                        'Tier1-NVMe' = [int]$matches['tier1Consumed']
+                    }
+                }
+            }
+        } # end foreach host
+
+        # Emit JSON
+        $combinedResults | ConvertTo-Json -Depth 4
+    }
+    catch {
+        # Return compact JSON error
+        [pscustomobject]@{
+            Status  = 'Error'
+            Message = $_.Exception.Message
+        } | ConvertTo-Json -Compress
+    }
+    finally {
+        # Ensure VI disconnect
+        try { Disconnect-VIServer -Server * -Confirm:$false | Out-Null } catch {}
+    }
+} # End Function
+
 function Get-vCenter-Host-Health {
     <#
     .SYNOPSIS
       Return the latest vROps 'badge|health' metric per vCenter ESXi host as JSON.
     .DESCRIPTION
-      Connects to Aria Operations (vROps) at 192.168.6.99 using admin credentials, enumerates HostSystem
+      Connects to VCF Operations (vROps) at 192.168.6.99 using admin credentials, enumerates HostSystem
       resources, fetches the most recent 'badge|health' sample within the last 24 hours for each host,
       and emits an array of objects with Resource, Time, and Value as a JSON string.
     .OUTPUTS
@@ -157,7 +346,7 @@ function Get-vCenter-Host-Health {
     [CmdletBinding()]
     param()
 
-    # Connect to Aria Operations (vROps)
+    # Connect to VCF Operations (vROps)
     Connect-OMServer -Server $cfg.OPS.opsIP -User $cfg.OPS.opsUsername -Password $cfg.OPS.opsPassword -Force
 
     # Get HostSystem resources as a unique, sorted list of names
@@ -626,7 +815,8 @@ $FunctionsToExpose = @(
     'Get-vCenter-VM-Stats',
     'Get-Network-Switch-Stats',
     'Send-Email',
-    'Get-vCenter-Host-Health'
+    'Get-vCenter-Host-Health',
+    'Get-vCenter-Host-Tiered-Memory-Usage'
     # Add your PowerCLI / ops functions here, e.g. 'Get-VM', 'Get-ClusterStatus', etc.
 )
 
