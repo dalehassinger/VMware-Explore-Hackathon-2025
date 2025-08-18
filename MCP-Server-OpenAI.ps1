@@ -76,10 +76,7 @@ try {
     exit 1
 }
 
-
-
-
-
+$rvtoolsPath = '/Users/dalehassinger/Documents/GitHub/PS-TAM-Lab/MCP/RVTools-MCP.xlsx'
 
 # --------------------------
 # CONFIG: Which functions to expose?
@@ -100,6 +97,360 @@ function Get-HostUptime {
         UptimeSeconds = [int]$ticks.TotalSeconds
         BootTime      = (gcim Win32_OperatingSystem).LastBootUpTime
     } | ConvertTo-Json -Depth 5
+} # End Function
+
+function Create-DNS-ARecord {
+
+    <#
+    .SYNOPSIS
+    Add or update an A record in a Microsoft DNS zone (SSH only).
+
+    .DESCRIPTION
+    Executes DNS Server cmdlets remotely via ssh/sshpass (PowerShell on the DNS host).
+    Steps:
+        1. Lookup existing A record.
+        2. If IP matches requested: report Unchanged.
+        3. Else remove (if exists) then add new record.
+    Outputs object: Action, Status, Zone, RecordName, IPv4, TTL, Message.
+
+    .REQUIREMENTS
+    - DNS Server role + DnsServer module on remote Windows DNS server.
+    - OpenSSH server enabled (password auth or acceptable method for sshpass).
+    - sshpass installed locally.
+
+    .EXAMPLE
+    ./dns-a-record.ps1 -RecordName web01 -IPv4Address 192.168.6.50
+
+    .EXAMPLE
+    ./dns-a-record.ps1 -RecordName api01 -IPv4Address 192.168.6.60 -TTL (New-TimeSpan -Minutes 5)
+    #>
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9-]+$')]
+        [string]$RecordName,
+        [Parameter(Mandatory)]
+        [System.Net.IPAddress]$IPv4Address,
+        [string]$ZoneName  = 'vcrocs.local',
+        [string]$DnsServer = '192.168.6.2',
+        [TimeSpan]$TTL     = ([TimeSpan]::FromHours(1)),
+        [string]$Username  = 'administrator@vcrocs.local',
+        [SecureString]$Password
+    )
+
+    # Default lab password
+    if (-not $PSBoundParameters.ContainsKey('Password')) {
+        $Password = ConvertTo-SecureString 'VMware1!' -AsPlainText -Force
+    }
+
+    # Require sshpass
+    if (-not (Get-Command sshpass -ErrorAction SilentlyContinue)) {
+        Write-Error "sshpass not found."
+        exit 1
+    }
+
+    # Port 22 reachability
+    try {
+        $tcp = [System.Net.Sockets.TcpClient]::new()
+        $ar  = $tcp.BeginConnect($DnsServer,22,$null,$null)
+        if (-not $ar.AsyncWaitHandle.WaitOne(3000)) { $tcp.Close(); throw "Timeout connecting to $DnsServer:22" }
+        if (-not $tcp.Connected) { throw "Connection refused on $DnsServer:22" }
+        $tcp.EndConnect($ar); $tcp.Close()
+    } catch {
+        [pscustomobject]@{
+            Action='Query'; Status='Error'; Zone=$ZoneName; RecordName=$RecordName;
+            IPv4=$IPv4Address.IPAddressToString; Message="SSH unreachable: $($_.Exception.Message)"
+        } | ConvertTo-Json -Compress
+        return
+    }
+
+    # Plain password (lab)
+    $plainPw = [Runtime.InteropServices.Marshal]::PtrToStringBSTR(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Password)
+    )
+
+    function Invoke-Remote {
+        param([Parameter(Mandatory)][string]$Script)
+        $wrapper = @'
+$ErrorActionPreference='Stop'
+try {
+Import-Module DnsServer -ErrorAction Stop
+__PAYLOAD__
+} catch {
+  Write-Output ('ERR::' + $_.Exception.Message)
+  exit 1
+}
+'@
+        $payload = $wrapper -replace '__PAYLOAD__', $Script
+        $bytes   = [Text.Encoding]::Unicode.GetBytes($payload)
+        $b64     = [Convert]::ToBase64String($bytes)
+        $sshArgs = @(
+            "-p",$plainPw,"ssh",
+            "-o","StrictHostKeyChecking=no",
+            "-o","PreferredAuthentications=password",
+            "-o","PubkeyAuthentication=no",
+            "$Username@$DnsServer",
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $b64"
+        )
+        (& sshpass @sshArgs 2>&1)
+    }
+
+    function Get-ARecord {
+        Invoke-Remote -Script @"
+`$r = Get-DnsServerResourceRecord -ZoneName '$ZoneName' -Name '$RecordName' -RRType A -ErrorAction SilentlyContinue
+if (`$null -ne `$r) {
+  `$ips = `$r.RecordData.IPv4Address.IPAddressToString
+  Write-Output ('OK::' + (@(`$ips) -join ','))
+} else {
+  Write-Output 'MISS::'
+}
+"@
+    }
+
+    function Remove-ARecord {
+        Invoke-Remote -Script "Remove-DnsServerResourceRecord -ZoneName '$ZoneName' -Name '$RecordName' -RRType A -Force -ErrorAction Stop; Write-Output 'OK::REMOVED'"
+    }
+
+    function Add-ARecord {
+        $ttl = $TTL.ToString()
+        Invoke-Remote -Script "Add-DnsServerResourceRecordA -ZoneName '$ZoneName' -Name '$RecordName' -IPv4Address '$($IPv4Address.IPAddressToString)' -TimeToLive ([TimeSpan]'$ttl') -ErrorAction Stop; Write-Output 'OK::ADDED'"
+    }
+
+    # Lookup
+    $raw = Get-ARecord
+    if ($raw -is [array]) { $raw = $raw[-1] }
+    $hasRecord = $false
+    $existingIPs = @()
+
+    switch -regex ($raw) {
+        '^OK::' {
+            $d = $raw.Substring(4)
+            if ($d) { $existingIPs = $d -split ','; $hasRecord = $true }
+        }
+        '^ERR::' {
+            [pscustomobject]@{
+                Action='Query'; Status='Error'; Zone=$ZoneName; RecordName=$RecordName;
+                IPv4=$IPv4Address.IPAddressToString; Message="Lookup failed: $raw"
+            } | ConvertTo-Json -Compress
+            return
+        }
+    }
+
+    $targetIP = $IPv4Address.IPAddressToString
+
+    # Unchanged
+    if ($hasRecord -and $existingIPs.Count -eq 1 -and $existingIPs[0] -eq $targetIP) {
+        [pscustomobject]@{
+            Action='None'; Status='Unchanged'; Zone=$ZoneName; RecordName=$RecordName;
+            IPv4=$targetIP; Message='A record already present with matching IP'
+        } | ConvertTo-Json -Compress
+        return
+    }
+
+    $action = if ($hasRecord) { 'Update' } else { 'Create' }
+
+    # Change
+    try {
+        if ($hasRecord) {
+            if (-not $PSCmdlet.ShouldProcess("$RecordName.$ZoneName","Remove existing A record ($($existingIPs -join ','))")) { return }
+            $del = Remove-ARecord
+            if (-not ($del -match '^OK::')) { throw "Remove failed: $del" }
+        } else {
+            if (-not $PSCmdlet.ShouldProcess("$RecordName.$ZoneName","Create A record -> $targetIP")) { return }
+        }
+
+        $add = Add-ARecord
+        if (-not ($add -match '^OK::')) { throw "Add failed: $add" }
+
+        [pscustomobject]@{
+            Action     = if ($hasRecord) { 'Updated' } else { 'Created' }
+            Status     = 'Success'
+            Zone       = $ZoneName
+            RecordName = $RecordName
+            IPv4       = $targetIP
+            TTL        = $TTL.ToString()
+            Message    = 'A record committed'
+        } | ConvertTo-Json -Compress
+    }
+    catch {
+        [pscustomobject]@{
+            Action     = $action
+            Status     = 'Error'
+            Zone       = $ZoneName
+            RecordName = $RecordName
+            IPv4       = $targetIP
+            Message    = $_.Exception.Message
+        } | ConvertTo-Json -Compress
+        return
+    }
+} # End Function
+
+function Get-RVTools-Zombie-VMDK {
+
+    <#
+    .SYNOPSIS
+    - Parse RVTools Excel -> vHealth tab -> JSON
+    .DESCRIPTION
+    - Show vCenter Zombie VMDKs
+    - Only use this Function when RVTools is in the prompt
+    - Returns a JSON string of the data
+    #>
+
+
+    # Ensure ImportExcel is available (no Excel app needed)
+    if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+        try {
+            $null = Install-Module ImportExcel -Scope CurrentUser -Force -ErrorAction Stop
+        } catch {
+            Throw "Could not install ImportExcel: $($_.Exception.Message)"
+        }
+    }
+    Import-Module ImportExcel -ErrorAction Stop
+
+    # Import the vHealth worksheet
+    try {
+        $raw = Import-Excel -Path $rvtoolsPath -WorksheetName 'vHealth' -DataOnly -ErrorAction Stop
+    } catch {
+        Throw "Failed to read 'vHealth' sheet from '$rvtoolsPath': $($_.Exception.Message)"
+    }
+
+    if (-not $raw -or $raw.Count -eq 0) {
+        Write-Error "No rows found on the 'vHealth' worksheet."
+        exit 1
+    }
+
+    $rows =
+        $raw |
+        Where-Object { $_.'Name' -and $_.'Message' } |
+        ForEach-Object {
+            $fullName = $_.'Name'                                # e.g. "[datastore_01] testVm01/testVm01_1-000001.vmdk"
+
+            # Datastore inside [ ... ]
+            $dsMatch   = [regex]::Match($fullName, '^\[([^\]]+)\]')
+            $datastore = if ($dsMatch.Success) { $dsMatch.Groups[1].Value } else { $null }
+
+            # Remove "[datastore] " prefix to get the path part
+            $pathAfter = $fullName -replace '^\[[^\]]+\]\s*',''   # e.g. "testVm01/testVm01_1-000001.vmdk"
+
+            # VmName = first segment before the first "/"
+            $segments  = $pathAfter -split '/'
+            $vmName    = if ($segments.Count -gt 0) { $segments[0].Trim() } else { $null }
+
+            # VMDK filename = last segment after the last "/"
+            $fileName  = if ($segments.Count -gt 0) { $segments[-1].Trim() } else { $null }
+
+            [pscustomobject]@{
+                Name        = $fileName
+                Datastore   = $datastore
+                VmName      = $vmName
+                Message     = $_.'Message'
+                MessageType = $_.'Message type'
+                VISDKServer = $_.'VI SDK Server'
+                VISDKUUID   = $_.'VI SDK UUID'
+            }
+        }
+
+        $rows = $rows | Where-Object { $_.MessageType -eq 'Zombie' }
+
+        $rows | ConvertTo-Json -Depth 5
+
+} # End Function
+
+function Get-RVTools-vCPU {
+
+
+    <#
+    .SYNOPSIS
+    Parse RVTools Excel -> vCPU tab -> JSON
+    .DESCRIPTION
+    - Show vCenter VM vCPU when RVTools needs to be used
+    - Only use this Function when RVTools is in the prompt
+    - Returns a JSON string of the data
+    #>
+
+    # Ensure ImportExcel is available (no Excel app needed)
+    if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+        try {
+            $null = Install-Module ImportExcel -Scope CurrentUser -Force -ErrorAction Stop
+        } catch {
+            Throw "Could not install ImportExcel: $($_.Exception.Message)"
+        }
+    }
+    Import-Module ImportExcel -ErrorAction Stop
+
+    # Import the vInfo worksheet
+    try {
+        $raw = Import-Excel -Path $rvtoolsPath -WorksheetName 'vCPU' -DataOnly -ErrorAction Stop
+    } catch {
+        Throw "Failed to read 'vInfo' sheet from '$rvtoolsPath': $($_.Exception.Message)"
+    }
+
+    if (-not $raw -or $raw.Count -eq 0) {
+        Write-Error "No rows found on the 'vInfo' worksheet."
+        exit 1
+    }
+
+    $rows =
+        $raw |
+        Where-Object { $_.'VM' } |
+        ForEach-Object {
+            # Return all columns as-is from the worksheet
+            $_
+        }
+
+    # Optional: Filter for specific conditions if needed
+    # $rows = $rows | Where-Object { $_.SomeColumn -eq 'SomeValue' }
+
+    $rows | ConvertTo-Json -Depth 5
+
+} # End Function
+
+
+function Get-RVTools-vInfo {
+
+    <#
+    .SYNOPSIS
+    Parse RVTools Excel -> vInfo tab -> JSON
+    .DESCRIPTION
+    - Show vCenter VM when RVTools needs to be used
+    - Only use this Function when RVTools is in the prompt
+    - Returns a JSON string of the data
+    #>
+
+    # Ensure ImportExcel is available (no Excel app needed)
+    if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+        try {
+            $null = Install-Module ImportExcel -Scope CurrentUser -Force -ErrorAction Stop
+        } catch {
+            Throw "Could not install ImportExcel: $($_.Exception.Message)"
+        }
+    }
+    Import-Module ImportExcel -ErrorAction Stop
+
+    # Import the vInfo worksheet
+    try {
+        $raw = Import-Excel -Path $rvtoolsPath -WorksheetName 'vInfo' -DataOnly -ErrorAction Stop
+    } catch {
+        Throw "Failed to read 'vInfo' sheet from '$rvtoolsPath': $($_.Exception.Message)"
+    }
+
+    if (-not $raw -or $raw.Count -eq 0) {
+        Write-Error "No rows found on the 'vInfo' worksheet."
+        exit 1
+    }
+
+    $rows =
+        $raw |
+        Where-Object { $_.'VM' } |
+        ForEach-Object {
+            # Return all columns as-is from the worksheet
+            $_
+        }
+
+    # Optional: Filter for specific conditions if needed
+    # $rows = $rows | Where-Object { $_.SomeColumn -eq 'SomeValue' }
+
+    $rows | ConvertTo-Json -Depth 5
+
 } # End Function
 
 
@@ -195,6 +546,8 @@ function Get-vCenter-Host-Tiered-Memory-Usage {
     <#
     .SYNOPSIS
       Collect tiered memory usage for all VMs across ESXi hosts and return JSON.
+
+      Do not use if RVTools is in the Prompt
     .DESCRIPTION
       Connects to vCenter, enumerates ESXi hosts, then SSHes to each host to fetch:
         - VM process list (to map VMX Cartel IDs to VM display names)
@@ -335,6 +688,9 @@ function Get-vCenter-Host-Health {
       Connects to VCF Operations (vROps) at 192.168.6.99 using admin credentials, enumerates HostSystem
       resources, fetches the most recent 'badge|health' sample within the last 24 hours for each host,
       and emits an array of objects with Resource, Time, and Value as a JSON string.
+
+      Do not use if RVTools is in the Prompt
+
     .OUTPUTS
       System.String (JSON)
     .EXAMPLE
@@ -389,6 +745,8 @@ function Get-All-vCenter-VMs {
     <#
     .SYNOPSIS
       Return vCenter VMs (all by default) and their properties as JSON
+
+      Do not use if RVTools is in the Prompt
     .PARAMETER Name
       Optional name or pattern to filter VMs
     #>
@@ -445,6 +803,8 @@ function Get-vCenter-VM-Stats {
     <#
     .SYNOPSIS
       Return vCenter VMs (all by default) and their properties as JSON
+
+      Do not use if RVTools is in the Prompt
     .PARAMETER Name
       Optional name or pattern to filter VMs
     #>
@@ -816,7 +1176,11 @@ $FunctionsToExpose = @(
     'Get-Network-Switch-Stats',
     'Send-Email',
     'Get-vCenter-Host-Health',
-    'Get-vCenter-Host-Tiered-Memory-Usage'
+    'Get-vCenter-Host-Tiered-Memory-Usage',
+    'Create-DNS-ARecord',
+    'Get-RVTools-Zombie-VMDK',
+    'Get-RVTools-vInfo',
+    'Get-RVTools-vCPU'
     # Add your PowerCLI / ops functions here, e.g. 'Get-VM', 'Get-ClusterStatus', etc.
 )
 
