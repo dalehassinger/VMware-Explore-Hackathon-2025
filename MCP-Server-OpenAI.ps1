@@ -99,6 +99,10 @@ function Get-HostUptime {
     } | ConvertTo-Json -Depth 5
 } # End Function
 
+
+# ------------------------------------------------------------------------------------
+
+
 function Create-DNS-ARecord {
 
     <#
@@ -284,6 +288,10 @@ if (`$null -ne `$r) {
     }
 } # End Function
 
+
+# ------------------------------------------------------------------------------------
+
+
 function Get-RVTools-Zombie-VMDK {
 
     <#
@@ -355,6 +363,10 @@ function Get-RVTools-Zombie-VMDK {
 
 } # End Function
 
+
+# ------------------------------------------------------------------------------------
+
+
 function Get-RVTools-vCPU {
 
 
@@ -405,6 +417,216 @@ function Get-RVTools-vCPU {
 } # End Function
 
 
+# ------------------------------------------------------------------------------------
+
+
+function Get-RVTools-vDisk {
+
+    <#
+    .SYNOPSIS
+    Parse RVTools Excel -> vDisk tab -> JSON
+    .DESCRIPTION
+    - Show vCenter VM vDisk when RVTools needs to be used
+    - Only use this Function when RVTools is in the prompt
+    - Returns a JSON string of the data
+    #>
+
+    # Ensure ImportExcel is available (no Excel app needed)
+    if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+        try {
+            $null = Install-Module ImportExcel -Scope CurrentUser -Force -ErrorAction Stop
+        } catch {
+            Throw "Could not install ImportExcel: $($_.Exception.Message)"
+        }
+    }
+    Import-Module ImportExcel -ErrorAction Stop
+
+    # Import the vInfo worksheet
+    try {
+        $raw = Import-Excel -Path $rvtoolsPath -WorksheetName 'vDisk' -DataOnly -ErrorAction Stop
+    } catch {
+        Throw "Failed to read 'vDisk' sheet from '$rvtoolsPath': $($_.Exception.Message)"
+    }
+
+    if (-not $raw -or $raw.Count -eq 0) {
+        Write-Error "No rows found on the 'vDisk' worksheet."
+        exit 1
+    }
+
+    $rows =
+        $raw |
+        Where-Object { $_.'VM' } |
+        ForEach-Object {
+            # Return all columns as-is from the worksheet
+            $_
+        }
+
+    # Optional: Filter for specific conditions if needed
+    # $rows = $rows | Where-Object { $_.SomeColumn -eq 'SomeValue' }
+
+    $rows | ConvertTo-Json -Depth 5
+
+} # End Function
+
+
+# ------------------------------------------------------------------------------------
+
+
+function Get-RVTools-vPartition {
+
+    <#
+    .SYNOPSIS
+    Parse RVTools Excel -> vPartition tab -> JSON
+    .DESCRIPTION
+    - Show vCenter VM vPartition when RVTools needs to be used
+    - Only use this Function when RVTools is in the prompt
+    - Returns a JSON string of the data
+    #>
+
+    # Ensure ImportExcel is available (no Excel app needed)
+    if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+        try {
+            $null = Install-Module ImportExcel -Scope CurrentUser -Force -ErrorAction Stop
+        } catch {
+            Throw "Could not install ImportExcel: $($_.Exception.Message)"
+        }
+    }
+    Import-Module ImportExcel -ErrorAction Stop
+
+    # Import the vInfo worksheet
+    try {
+        $raw = Import-Excel -Path $rvtoolsPath -WorksheetName 'vPartition' -DataOnly -ErrorAction Stop
+    } catch {
+        Throw "Failed to read 'vPartition' sheet from '$rvtoolsPath': $($_.Exception.Message)"
+    }
+
+    if (-not $raw -or $raw.Count -eq 0) {
+        Write-Error "No rows found on the 'vPartition' worksheet."
+        exit 1
+    }
+
+    $rows =
+        $raw |
+        Where-Object { $_.'VM' } |
+        ForEach-Object {
+            # Return all columns as-is from the worksheet
+            $_
+        }
+
+    # Optional: Filter for specific conditions if needed
+    # $rows = $rows | Where-Object { $_.SomeColumn -eq 'SomeValue' }
+
+    $rows | ConvertTo-Json -Depth 5
+
+} # End Function
+
+
+# ------------------------------------------------------------------------------------
+
+function Get-RVTools-vTools {
+
+    <#
+    .SYNOPSIS
+    Parse RVTools Excel -> vTools tab -> JSON
+    .DESCRIPTION
+    - Show vCenter VM vTools when RVTools needs to be used
+    - Only use this Function when RVTools is in the prompt
+    - Returns a JSON string of the data
+    #>
+
+    # Ensure ImportExcel is available (no Excel app needed)
+    if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+        try {
+            $null = Install-Module ImportExcel -Scope CurrentUser -Force -ErrorAction Stop
+        } catch {
+            Throw "Could not install ImportExcel: $($_.Exception.Message)"
+        }
+    }
+    Import-Module ImportExcel -ErrorAction Stop
+
+    # Import the vInfo worksheet
+    try {
+        $raw = Import-Excel -Path $rvtoolsPath -WorksheetName 'vTools' -DataOnly -ErrorAction Stop
+    } catch {
+        Throw "Failed to read 'vTools' sheet from '$rvtoolsPath': $($_.Exception.Message)"
+    }
+
+    if (-not $raw -or $raw.Count -eq 0) {
+        Write-Error "No rows found on the 'vTools' worksheet."
+        exit 1
+    }
+
+    $rows =
+        $raw |
+        Where-Object { $_.'VM' } |
+        ForEach-Object {
+            # Return all columns as-is from the worksheet
+            $_
+        }
+
+    # Optional: Filter for specific conditions if needed
+    # $rows = $rows | Where-Object { $_.SomeColumn -eq 'SomeValue' }
+
+    $rows | ConvertTo-Json -Depth 5
+
+} # End Function
+
+
+# ------------------------------------------------------------------------------------
+
+
+function Get-RVTools-vMemory {
+
+    <#
+    .SYNOPSIS
+    Parse RVTools Excel -> vMemory tab -> JSON
+    .DESCRIPTION
+    - Show vCenter VM vMemory when RVTools needs to be used
+    - Only use this Function when RVTools is in the prompt
+    - Returns a JSON string of the data
+    #>
+
+    # Ensure ImportExcel is available (no Excel app needed)
+    if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+        try {
+            $null = Install-Module ImportExcel -Scope CurrentUser -Force -ErrorAction Stop
+        } catch {
+            Throw "Could not install ImportExcel: $($_.Exception.Message)"
+        }
+    }
+    Import-Module ImportExcel -ErrorAction Stop
+
+    # Import the vInfo worksheet
+    try {
+        $raw = Import-Excel -Path $rvtoolsPath -WorksheetName 'vMemory' -DataOnly -ErrorAction Stop
+    } catch {
+        Throw "Failed to read 'vInfo' sheet from '$rvtoolsPath': $($_.Exception.Message)"
+    }
+
+    if (-not $raw -or $raw.Count -eq 0) {
+        Write-Error "No rows found on the 'vInfo' worksheet."
+        exit 1
+    }
+
+    $rows =
+        $raw |
+        Where-Object { $_.'VM' } |
+        ForEach-Object {
+            # Return all columns as-is from the worksheet
+            $_
+        }
+
+    # Optional: Filter for specific conditions if needed
+    # $rows = $rows | Where-Object { $_.SomeColumn -eq 'SomeValue' }
+
+    $rows | ConvertTo-Json -Depth 5
+
+} # End Function
+
+
+# ------------------------------------------------------------------------------------
+
+
 function Get-RVTools-vInfo {
 
     <#
@@ -452,6 +674,9 @@ function Get-RVTools-vInfo {
     $rows | ConvertTo-Json -Depth 5
 
 } # End Function
+
+
+# ------------------------------------------------------------------------------------
 
 
 function Send-Email {
@@ -540,6 +765,8 @@ function Send-Email {
     }
 } # End function
 
+
+# ------------------------------------------------------------------------------------
 
 
 function Get-vCenter-Host-Tiered-Memory-Usage {
@@ -680,6 +907,10 @@ function Get-vCenter-Host-Tiered-Memory-Usage {
     }
 } # End Function
 
+
+# ------------------------------------------------------------------------------------
+
+
 function Get-vCenter-Host-Health {
     <#
     .SYNOPSIS
@@ -741,6 +972,10 @@ function Get-vCenter-Host-Health {
 
 } # End Function
 
+
+# ------------------------------------------------------------------------------------
+
+
 function Get-All-vCenter-VMs {
     <#
     .SYNOPSIS
@@ -798,6 +1033,10 @@ function Get-All-vCenter-VMs {
         $ProgressPreference    = $prefBackup.Progress
     }
 } # End Function
+
+
+# ------------------------------------------------------------------------------------
+
 
 function Get-vCenter-VM-Stats {
     <#
@@ -862,6 +1101,8 @@ function Get-vCenter-VM-Stats {
     }
 } # End Function
 
+
+# ------------------------------------------------------------------------------------
 
 
 function Get-Network-Switch-Stats {
@@ -1180,7 +1421,11 @@ $FunctionsToExpose = @(
     'Create-DNS-ARecord',
     'Get-RVTools-Zombie-VMDK',
     'Get-RVTools-vInfo',
-    'Get-RVTools-vCPU'
+    'Get-RVTools-vCPU',
+    'Get-RVTools-vMemory',
+    'Get-RVTools-vDisk',
+    'Get-RVTools-vPartition',
+    'Get-RVTools-vTools'
     # Add your PowerCLI / ops functions here, e.g. 'Get-VM', 'Get-ClusterStatus', etc.
 )
 
