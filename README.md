@@ -2,7 +2,7 @@
 
 ---
 
-**Hackathon Update: This Team recived 1st place at the VMware Explore 2025 Hackathon. Great Event, awesome judges and overall a lot of fun!**
+**Hackathon Update: This Team received 1st place at the VMware Explore 2025 Hackathon. Great Event, awesome judges and overall a lot of fun!**
 
 ---
 
