@@ -2,6 +2,10 @@
 
 ---
 
+**Hackathon Update: This Team recived 1st place at the VMware Explore 2025 Hackathon. Great Event, awesome judges and overall a lot of fun!**
+
+---
+
 **Team Name: "Using MCP to prompt VMware Products"**
 
 **Team Description: "Use MCP with VSCode and Claude to get VMware information."**
